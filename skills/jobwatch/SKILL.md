@@ -1,6 +1,6 @@
 ---
 name: jobwatch
-description: PBS バッチジョブの状態を qstat で確認し、実験ディレクトリのログ(s/o/l/n.log)から ERROR/WARNING/NaN を検出して要約する。SCALE 解析パイプラインのジョブが通ったか・どの段で失敗したかを素早く確認したいときに使う。
+description: PBS バッチジョブの状態を qstat で確認し、実験ディレクトリのログ(s/o/l/n.log)から ERROR/WARNING/NaN を検出して要約する。SCALE 解析パイプラインのジョブが通ったか・どの段で失敗したかを素早く確認したいときに使う。富岳(PJM)のジョブスクリプトやログを scp してきて診断する「富岳ログ診断モード」も持つ。
 user-invocable: true
 argument-hint: "[job-id または実験ディレクトリ, optional]"
 allowed-tools:
@@ -58,3 +58,34 @@ bash <skill_dir>/scripts/jobwatch.sh [job-id|dir]
   パイプラインは直列なので、最初に異常が出た段以降は実行されていない／無効な可能性。
 - **継続監視**したい場合は、`/loop 5m /jobwatch <id>` で定期実行できる旨を案内する。
 - `qstat` が無い環境（ログだけ確認したいとき）でも、ログ走査だけは動くようにする。
+
+---
+
+## 富岳ログ診断モード（PJM）
+
+富岳のジョブは gale から直接 `pjstat` できないため、**ジョブスクリプトとログを scp して
+きたものを診断する** のが実際の運用。引数のディレクトリに `#PJM` を含むスクリプトや
+`log.txt`, `*_LOG*`, `output.*/stderr.*` があればこのモードで見る。
+
+### ジョブスクリプトのチェックポイント
+
+- `#PJM -L "node=N"` × `#PJM --mpi "max-proc-per-node=M"` = 総MPIプロセス数。これが
+  SCALE の conf 側 `PRC_NUM_X × PRC_NUM_Y` と一致しているか **必ず照合** する。
+- `#PJM -x PJM_LLIO_GFSCACHE=/vol000X:...` — 使う vol が全部列挙されているか
+  （列挙漏れの vol 上のファイルは読めず、無言で失敗することがある）。
+- `#PJM -S` があれば stats/stderr が `output.<jobid>/` に分かれて出る。そこも見る。
+- `mpiexec` の前に環境 setup（spack 等）が走っているか。
+
+### SCALE 特有の落ち方（実事例ベース）
+
+- **`*_LOG` が空のまま終了** → 実行開始前に死んでいる。MPIプロセス数と PRC_NUM の不一致、
+  または入力ファイル（boundary/init）のパス・分割数不一致を疑う。
+- **`SIGBUS (BUS_ADRERR)`** → Parallel NetCDF / `FILE_HISTORY_AGGREGATE` 絡みや
+  メモリアライメントを疑う。AGGREGATE を切って切り分ける。
+- **`MPI_ABORT ... errorcode -1`** → LOG ファイルの末尾に SCALE 自身のエラーメッセージが
+  出ているはず。stderr ではなく `*_LOG_d0*` を grep する。
+- **バイナリ入力の読み込み異常**（値がデタラメ等）→ GrADS 形式入力の **エンディアン**
+  （big endian `>f4` で書いたか）と record 構成を確認。変換スクリプト側の問題が多い。
+- **pp は通るが init が失敗** → pp 出力 (topo/landuse) は正常でも、ATM/SFC/LND の
+  変換データ（grd）の格子数・レベル数・時刻の不一致がありうる。`namelist.grads` と
+  実ファイルサイズ（= nx×ny×nz×4 bytes × 変数数）の整合を計算して確かめる。
